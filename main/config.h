@@ -15,8 +15,8 @@
 #define I2C_MASTER_SDA_IO          2        /* I2C SDA 引脚 (与芯片 LP_I2C_SDA 默认一致) */
 #define I2C_MASTER_SCL_IO          3        /* I2C SCL 引脚 (与芯片 LP_I2C_SCL 默认一致) */
 #define I2C_MASTER_PORT            0        /* I2C 控制器编号 */
-#define I2C_MASTER_FREQ_HZ         400000   /* 总线频率: 400kHz */
-#define I2C_MASTER_TIMEOUT_MS      100      /* 单次传输超时 */
+#define I2C_MASTER_FREQ_HZ         100000   /* 总线频率: 100kHz (标准模式, 排查弱上拉时更稳) */
+#define I2C_MASTER_TIMEOUT_MS      300      /* 单次传输超时 */
 #define I2C_DEV_TABLE_MAX          16       /* 可挂载的最大 I2C 设备数 */
 
 /* ------------------------ 外挂传感器 I2C 地址 ------------------------------ */
@@ -31,7 +31,7 @@
 #define SENSOR_TASK_NAME           "sensor_task"
 #define SENSOR_TASK_STACK_SIZE     4096
 #define SENSOR_TASK_PRIO           5
-#define SENSOR_SAMPLE_INTERVAL_MS  500      /* 采样周期 */
+#define SENSOR_SAMPLE_INTERVAL_MS  100      /* 采样周期 */
 #define SENSOR_MANAGER_MAX_INSTANCES 8      /* 同时在线的最大传感器实例数 */
 
 /* ------------------------ WiFi 传输（预留） -------------------------------- */

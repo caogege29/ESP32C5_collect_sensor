@@ -1,198 +1,204 @@
 /*
- * BMI323 高精度6轴IMU 传感器驱动 (Bosch)
- * 原理图: U3/U7 模块座 (HC-PM254-5.0H-1x6PZ), 引脚见 config.h:
+ * SEN0692 Gravity 6 轴惯性运动传感器 驱动适配层 (DFRobot Multi-DOF IMU I2C 协议)
+ *
+ * 原理图: 模块座 (HC-PM254-5.0H-1x6PZ), 引脚见 config.h:
  *   SCL=GPIO3, SDA=GPIO2, INT1=GPIO0, INT2=GPIO1
  *
- * BMI323 关键特性:
- *   - 16 位寄存器架构: 每个寄存器读/写均按 2 字节处理, LSB 在前;
- *   - 连续读时寄存器地址自动递增, 可一次读取多组数据;
- *   - I2C 地址由模块电路固定为 0x4A (见 config.h);
- *   - CHIP_ID(0x00) 固定为 0x43;
- *   - 上电或软复位后 I2C 接口需 dummy read 激活(datasheet 启动序列);
- *   - 传感器默认处于关闭状态, 需写 ACC_CONF/GYR_CONF 使能。
+ * 重要说明(排除数据异常的根因):
+ *   该模块(DFRobot SEN0692)板载一颗协议转换 MCU, I2C 地址 0x4A 暴露的是
+ *   DFRobot Modbus 简化的寄存器协议, 并【不是】博世 BMI323 原始寄存器。
+ *   因此不能使用 Bosch bmi323 裸驱动 —— 直接读 BMI323 寄存器会得到
+ *   CHIP_ID 不符(bmi323_init 返回 -3)以及冻结/错位数据。
+ *   本文件按 DFRobot_Multi_DOF_IMU 库的 I2C 协议实现:
+ *     - 寄存器地址为 16bit, 小端(先低字节后高字节);
+ *     - 写: 发 [reg_lo][reg_hi][data...]
+ *     - 读: 发 [reg_lo][reg_hi], 等待约 10ms, 再读 len 字节
+ *
+ * 寄存器(来自库 DFRobot_Multi_DOF_IMU.h, I2C 模式):
+ *   0x0001 PID(产品识别码, 仅读)
+ *   0x0005 工作模式(写)  normal=0x02
+ *   0x0006 加速度量程(写) ±2G=0x00
+ *   0x0007 陀螺仪量程(写) ±250dps=0x01
+ *   0x0010 ACC/gyr 数据(读 12 字节): accX/Y/Z + gyrX/Y/Z, 各 2 字节小端 int16
+ *
+ * 物理换算(参考库 lsbToG / lsbToDps):
+ *   物理量 = raw * 量程 / 32768   加速度(g→m/s^2 再乘 9.80665)
  */
 #include <string.h>
 #include <stdio.h>
 #include "esp_log.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
+#include "esp_rom_sys.h"
 #include "config.h"
 #include "i2c_bus.h"
 #include "sensor_driver.h"
 
-static const char *TAG = "bmi323";
+static const char *TAG = "df_imu6";
 
-/* ---------------------------- BMI323 寄存器 ------------------------------- */
-#define BMI323_REG_CHIP_ID     0x00   /* 芯片 ID, 读出 0x0043 */
-#define BMI323_REG_ERR_REG     0x01   /* 错误状态 */
-#define BMI323_REG_STATUS      0x02   /* 状态(数据就绪等) */
-#define BMI323_REG_ACC_DATA_X  0x03   /* 加速度计数据, 0x03~0x05 (X/Y/Z) */
-#define BMI323_REG_GYR_DATA_X  0x06   /* 陀螺仪数据, 0x06~0x08 (X/Y/Z) */
-#define BMI323_REG_TEMPERATURE 0x09   /* 温度数据 */
-#define BMI323_REG_ACC_CONF    0x20   /* 加速度计配置: BW/ODR/模式 */
-#define BMI323_REG_ACC_RANGE   0x21   /* 加速度计量程 */
-#define BMI323_REG_GYR_CONF    0x22   /* 陀螺仪配置: BW/ODR/模式 */
-#define BMI323_REG_GYR_RANGE   0x23   /* 陀螺仪量程 */
-#define BMI323_REG_CMD         0x7E   /* 命令寄存器 */
+/* ---------------- DFRobot I2C 寄存器地址(16bit) ---------------- */
+#define REG_PID                   0x0001 /* 产品识别码(只读)           */
+#define REG_SENSORS_MODE          0x0005 /* 工作模式(读写)             */
+#define REG_ACC_RANGE_CONF        0x0006 /* 加速度量程(读写)           */
+#define REG_GYR_RANGE_CONF        0x0007 /* 陀螺仪量程(读写)           */
+#define REG_ACC_DATA_X            0x0010 /* 6 轴数据起始(只读, 12B)    */
 
-/* CMD 命令: 软复位 */
-#define BMI323_CMD_SOFT_RESET  0xDE
+/* 数值定义(来自库枚举, I2C 模式) */
+#define SEN_MODEL_6DOF            0x0006 /* eSensorModel6DOF           */
+#define MODE_NORMAL               0x02   /* eNormalMode                */
+#define ACC_RANGE_2G              0x00   /* eAccelRange2G              */
+#define GYR_RANGE_250DPS          0x01   /* eGyroRange250DPS           */
+#define ACC_RANGE_FLOAT           2.0f   /* 与 ACC_RANGE_2G 对应       */
+#define GYR_RANGE_FLOAT           250.0f /* 与 GYR_RANGE_250DPS 对应   */
 
-/* ACC_CONF 字段: [13:10] BW | [9:6] ODR | [1:0] MODE */
-#define BMI323_ACC_ODR_100HZ   (7 << 6)   /* ODR=100Hz */
-#define BMI323_ACC_MODE_NORMAL 0x02       /* 正常工作模式 */
+static uint8_t s_dev_addr = 0;   /* 从机地址                       */
+static bool    s_inited   = false;
 
-/* GYR_CONF 字段: [13:10] BW | [9:6] ODR | [1:0] MODE */
-#define BMI323_GYR_ODR_100HZ   (7 << 6)   /* ODR=100Hz */
-#define BMI323_GYR_MODE_NORMAL 0x02       /* 正常工作模式 */
-
-/* 量程配置 */
-#define BMI323_ACC_RANGE_8G    (2 << 12)  /* [13:12]: ±8g */
-#define BMI323_GYR_RANGE_2000  (4 << 11)  /* [13:11]: ±2000dps */
-
-/* 灵敏度换算系数 */
-#define GRAVITY_MPS2           9.80665f
-#define BMI323_ACC_LSB_PER_G   4096.0f    /* ±8g 档: 32768/8 */
-#define BMI323_GYR_LSB_PER_DPS 16.384f    /* ±2000dps 档: 32768/2000 */
-#define BMI323_TEMP_LSB_DEGC   (1.0f / 511.0f)  /* 温度 1/511 ℃/LSB */
-#define BMI323_TEMP_OFFSET     23.0f      /* 温度偏移 */
-
-#define BMI323_CHIP_ID_VALUE   0x43
-#define BMI323_RESET_DELAY_MS  20         /* 软复位等待(datasheet ≥1.8ms, 取保险值) */
-
-/* 从字节指针解析小端 16 位有符号整数(寄存器数据为 LSB 在前) */
-static int16_t le16(const uint8_t *p)
-{
-    return (int16_t)((p[1] << 8) | p[0]);
-}
-
-/* 候选地址: 本模块固定为 0x4A (见 config.h) */
-static const uint8_t s_bmi323_addrs[] = {
-    SENSOR_IMU_6AXIS_ADDR,
-};
+/* ------------------------- 底层 I2C 读/写 ------------------------------- */
 
 /**
- * 写 BMI323 一个 16 位寄存器: [寄存器地址][LSB][MSB]
+ * 按 DFRobot 协议写: [reg_lo][reg_hi][data...]
  */
-static esp_err_t bmi323_write_reg16(i2c_master_dev_handle_t dev, uint8_t reg, uint16_t val)
+static esp_err_t df_i2c_write_reg16(uint16_t reg, const uint8_t *data, size_t len)
 {
-    uint8_t buf[3] = { reg, (uint8_t)(val & 0xFF), (uint8_t)(val >> 8) };
-    return i2c_master_transmit(dev, buf, sizeof(buf), I2C_MASTER_TIMEOUT_MS);
+    i2c_master_dev_handle_t dev = i2c_bus_dev_get(s_dev_addr);
+    if (dev == NULL) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (len + 2 > 64) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    uint8_t buf[64];
+    buf[0] = (uint8_t)(reg & 0xFF);
+    buf[1] = (uint8_t)((reg >> 8) & 0xFF);
+    memcpy(buf + 2, data, len);
+    return i2c_master_transmit(dev, buf, len + 2, I2C_MASTER_TIMEOUT_MS);
 }
 
 /**
- * 读 BMI323 一个 16 位寄存器, 返回 LSB 在 buf[0]。
+ * 按 DFRobot 协议读: 发 [reg_lo][reg_hi], 等约 10ms(让 MCU 有时间取数), 再读 len 字节。
  */
-static esp_err_t bmi323_read_reg16(i2c_master_dev_handle_t dev, uint8_t reg, uint8_t *buf)
+static esp_err_t df_i2c_read_reg16(uint16_t reg, uint8_t *buf, size_t len)
 {
-    return i2c_bus_read_regs(dev, reg, buf, 2);
+    i2c_master_dev_handle_t dev = i2c_bus_dev_get(s_dev_addr);
+    if (dev == NULL) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    uint8_t addr_buf[2] = {
+        (uint8_t)(reg & 0xFF),
+        (uint8_t)((reg >> 8) & 0xFF),
+    };
+    esp_err_t err = i2c_master_transmit(dev, addr_buf, sizeof(addr_buf), I2C_MASTER_TIMEOUT_MS);
+    if (err != ESP_OK) {
+        return err;
+    }
+    esp_rom_delay_us(10000); /* 10ms: 与库中 delay(10) 一致 */
+    return i2c_master_receive(dev, buf, len, I2C_MASTER_TIMEOUT_MS);
 }
 
+/* ------------------------- 驱动接口 --------------------------------------- */
+
 /**
- * 探测识别芯片并完成初始化。
- * 流程遵循 datasheet 启动序列:
- *   软复位 -> 延时 -> dummy read 激活 I2C -> 校验 CHIP_ID -> 配置传感器
+ * 探测识别并初始化模块。
+ * 返回 ESP_OK 表示识别为 SEN0692(6DOF) 且配置成功。
  */
 static esp_err_t imu_probe(uint8_t addr, char *info, size_t info_len)
 {
-    i2c_master_dev_handle_t dev = i2c_bus_dev_get(addr);
-    if (dev == NULL) {
-        return ESP_ERR_NO_MEM;
+    uint8_t raw[2] = { 0, 0 };
+
+    s_dev_addr = addr;
+
+    /* 读取 PID 判断是否为 6DOF IMU(PID >= eSensorModel6DOF) */
+    if (df_i2c_read_reg16(REG_PID, raw, 2) != ESP_OK) {
+        ESP_LOGE(TAG, "probe 0x%02X: 读取 PID 失败", addr);
+        return ESP_ERR_NOT_FOUND;
     }
-    uint8_t id[2] = { 0 };
-
-    /* 1. 软复位: 处理未知上电状态, 之后 I2C 需 dummy read 才能正常访问 */
-    bmi323_write_reg16(dev, BMI323_REG_CMD, BMI323_CMD_SOFT_RESET);
-    vTaskDelay(pdMS_TO_TICKS(BMI323_RESET_DELAY_MS));
-
-    /* 2. dummy read 激活 I2C 接口(datasheet 要求) */
-    uint8_t dummy = 0;
-    (void)i2c_bus_read_regs(dev, BMI323_REG_CHIP_ID, &dummy, 1);
-    vTaskDelay(pdMS_TO_TICKS(2));
-
-    /* 3. 校验 CHIP_ID (0x0043, 低字节 0x43) */
-    if (bmi323_read_reg16(dev, BMI323_REG_CHIP_ID, id) != ESP_OK || id[0] != BMI323_CHIP_ID_VALUE) {
-        ESP_LOGE(TAG, "0x%02X: CHIP_ID 校验失败 (读得 0x%02X%02X, 期望 0x0043)",
-                 addr, id[1], id[0]);
+    uint16_t pid = (uint16_t)(raw[0] | (raw[1] << 8));
+    if (pid < SEN_MODEL_6DOF) {
+        ESP_LOGE(TAG, "probe 0x%02X: PID=0x%04X 非 6DOF IMU", addr, pid);
         return ESP_ERR_NOT_FOUND;
     }
 
-    /* 4. 配置加速度计: 100Hz + 正常模式, 量程 ±8g */
-    esp_err_t err = bmi323_write_reg16(dev, BMI323_REG_ACC_CONF,
-                                       BMI323_ACC_ODR_100HZ | BMI323_ACC_MODE_NORMAL);
-    if (err == ESP_OK) {
-        err = bmi323_write_reg16(dev, BMI323_REG_ACC_RANGE, BMI323_ACC_RANGE_8G);
-    }
-    /* 5. 配置陀螺仪: 100Hz + 正常模式, 量程 ±2000dps */
-    if (err == ESP_OK) {
-        err = bmi323_write_reg16(dev, BMI323_REG_GYR_CONF,
-                                 BMI323_GYR_ODR_100HZ | BMI323_GYR_MODE_NORMAL);
-    }
-    if (err == ESP_OK) {
-        err = bmi323_write_reg16(dev, BMI323_REG_GYR_RANGE, BMI323_GYR_RANGE_2000);
-    }
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "0x%02X: 传感器配置失败 (err=0x%x)", addr, err);
-        return err;
+    /* 切换到正常模式 */
+    uint16_t mode = MODE_NORMAL;
+    if (df_i2c_write_reg16(REG_SENSORS_MODE, (const uint8_t *)&mode, 2) != ESP_OK) {
+        ESP_LOGE(TAG, "probe 0x%02X: 设置工作模式失败", addr);
+        return ESP_FAIL;
     }
 
-    snprintf(info, info_len, "BMI323 (CHIP_ID=0x%02X)", id[0]);
-    ESP_LOGI(TAG, "probe 0x%02X: BMI323 初始化完成 (ACC ±8g 100Hz, GYR ±2000dps 100Hz)",
-             addr);
+    /* 加速度量程 ±2G */
+    uint16_t acc = ACC_RANGE_2G;
+    if (df_i2c_write_reg16(REG_ACC_RANGE_CONF, (const uint8_t *)&acc, 2) != ESP_OK) {
+        ESP_LOGE(TAG, "probe 0x%02X: 设置加速度量程失败", addr);
+        return ESP_FAIL;
+    }
+
+    /* 陀螺仪量程 ±250dps */
+    uint16_t gyr = GYR_RANGE_250DPS;
+    if (df_i2c_write_reg16(REG_GYR_RANGE_CONF, (const uint8_t *)&gyr, 2) != ESP_OK) {
+        ESP_LOGE(TAG, "probe 0x%02X: 设置陀螺仪量程失败", addr);
+        return ESP_FAIL;
+    }
+
+    s_inited = true;
+    snprintf(info, info_len, "SEN0692 6DOF IMU (PID=0x%04X)", pid);
+    ESP_LOGI(TAG, "probe 0x%02X: SEN0692 初始化完成 (PID=0x%04X, ACC ±2g, GYR ±250dps)", addr, pid);
     return ESP_OK;
 }
 
 /**
- * 读取一帧 6 轴数据 + 温度:
- *   0x03 起连续 12 字节覆盖 ACC X/Y/Z 与 GYR X/Y/Z 六个 16 位寄存器,
- *   再单独读温度寄存器(0x09), 并按量程换算为物理单位。
+ * 读取一帧 6 轴数据。
  */
 static esp_err_t imu_read(uint8_t addr, sensor_data_t *out)
 {
-    i2c_master_dev_handle_t dev = i2c_bus_dev_get(addr);
-    if (dev == NULL) {
+    if (!s_inited || addr != s_dev_addr) {
         return ESP_ERR_INVALID_STATE;
     }
     memset(out, 0, sizeof(*out));
 
-    /* 加速度 + 角速度: 6 个 16 位寄存器连读 */
+    /* 从 REG_ACC_DATA_X 连续读 12 字节(6 个 int16, 小端) */
     uint8_t raw[12];
-    esp_err_t err = i2c_bus_read_regs(dev, BMI323_REG_ACC_DATA_X, raw, sizeof(raw));
-    if (err != ESP_OK) {
-        return err;
+    if (df_i2c_read_reg16(REG_ACC_DATA_X, raw, sizeof(raw)) != ESP_OK) {
+        ESP_LOGE(TAG, "0x%02X: 读取 6 轴数据失败", addr);
+        return ESP_FAIL;
     }
-    out->has_acc = true;
-    out->acc_mps2[0] = le16(raw + 0) / BMI323_ACC_LSB_PER_G * GRAVITY_MPS2;
-    out->acc_mps2[1] = le16(raw + 2) / BMI323_ACC_LSB_PER_G * GRAVITY_MPS2;
-    out->acc_mps2[2] = le16(raw + 4) / BMI323_ACC_LSB_PER_G * GRAVITY_MPS2;
-    out->has_gyr = true;
-    out->gyr_dps[0] = le16(raw + 6) / BMI323_GYR_LSB_PER_DPS;
-    out->gyr_dps[1] = le16(raw + 8) / BMI323_GYR_LSB_PER_DPS;
-    out->gyr_dps[2] = le16(raw + 10) / BMI323_GYR_LSB_PER_DPS;
 
-    /* 温度: raw/511 + 23 */
-    uint8_t traw[2];
-    if (bmi323_read_reg16(dev, BMI323_REG_TEMPERATURE, traw) == ESP_OK) {
-        out->has_temp  = true;
-        out->temp_degc = le16(traw) * BMI323_TEMP_LSB_DEGC + BMI323_TEMP_OFFSET;
+    int16_t av[3], gv[3];
+    av[0] = (int16_t)(raw[0]  | (raw[1]  << 8)); /* accX */
+    av[1] = (int16_t)(raw[2]  | (raw[3]  << 8)); /* accY */
+    av[2] = (int16_t)(raw[4]  | (raw[5]  << 8)); /* accZ */
+    gv[0] = (int16_t)(raw[6]  | (raw[7]  << 8)); /* gyrX */
+    gv[1] = (int16_t)(raw[8]  | (raw[9]  << 8)); /* gyrY */
+    gv[2] = (int16_t)(raw[10] | (raw[11] << 8)); /* gyrZ */
+
+    /* 加速度: raw -> g -> m/s^2 */
+    out->has_acc = true;
+    for (int i = 0; i < 3; i++) {
+        out->acc_mps2[i] = (float)av[i] * ACC_RANGE_FLOAT / 32768.0f * 9.80665f;
     }
+
+    /* 角速度: raw -> dps */
+    out->has_gyr = true;
+    for (int i = 0; i < 3; i++) {
+        out->gyr_dps[i] = (float)gv[i] * GYR_RANGE_FLOAT / 32768.0f;
+    }
+
+    /* 该协议未暴露温度, 置空 */
+    out->has_temp = false;
 
     /* 串口打印采集数据(调试用) */
     ESP_LOGI(TAG, "0x%02X ACC[m/s^2] X=%.3f Y=%.3f Z=%.3f | "
-                  "GYR[dps] X=%.3f Y=%.3f Z=%.3f | TEMP=%.2f℃",
+                  "GYR[dps] X=%.3f Y=%.3f Z=%.3f",
              addr,
              out->acc_mps2[0], out->acc_mps2[1], out->acc_mps2[2],
-             out->gyr_dps[0], out->gyr_dps[1], out->gyr_dps[2],
-             out->temp_degc);
+             out->gyr_dps[0], out->gyr_dps[1], out->gyr_dps[2]);
 
     return ESP_OK;
 }
 
 /* 导出驱动实例, 供 sensor_manager 的注册表引用 */
 const sensor_driver_t imu_6axis_driver = {
-    .name       = "BMI323 6-axis IMU",
-    .addr_list  = s_bmi323_addrs,
-    .addr_count = sizeof(s_bmi323_addrs) / sizeof(s_bmi323_addrs[0]),
+    .name       = "SEN0692 6-axis IMU",
+    .addr_list  = &(uint8_t){ SENSOR_IMU_6AXIS_ADDR },
+    .addr_count = 1,
     .probe      = imu_probe,
     .read       = imu_read,
 };
