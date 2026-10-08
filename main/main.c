@@ -29,19 +29,27 @@ static void sensor_task(void *arg)
 {
     sensor_sample_t samples[SENSOR_MANAGER_MAX_INSTANCES]; /* 存放一次采集结果 */
     char json[256];                                        /* 单帧 JSON 序列化缓冲 */
+    TickType_t last_wake = xTaskGetTickCount();            /* 绝对周期调度基准点 */
+    uint32_t frame_cnt = 0;                                /* 帧计数(用于节流打印) */
 
     while (1) {
         /* 采集所有在线传感器各一帧, 返回实际采集到的数量 */
         int n = sensor_manager_collect(samples, SENSOR_MANAGER_MAX_INSTANCES);
+        frame_cnt++;
         for (int i = 0; i < n; i++) {
-            /* 将采集结果序列化为 JSON(含传感器名+地址, 便于 P4 区分来源) */
-            // if (sensor_sample_to_json(&samples[i], json, sizeof(json)) > 0) {
-            //     ESP_LOGI(TAG, "%s", json);
-            //     wifi_link_send_data(json); /* 预留: 发送到 ESP32-P4 主控 */
-            // }
+            /* 构建含 node_id + IMU原始数据 + 压力占位的发送帧, 实时发给 P4 */
+            if (sensor_build_tx_frame(WIFI_LINK_NODE_ID, &samples[i],
+                                      NULL, json, sizeof(json)) > 0) {
+                wifi_link_send_data(json);        /* 每帧都实时发送到 ESP32-P4 接收端 */
+                /* 打印节流: 每 N 帧(5ms*200=1s)才打一次, 避免高速下 UART 拖慢发送 */
+                if ((frame_cnt % SENSOR_LOG_INTERVAL_FRAMES) == 0) {
+                    ESP_LOGI(TAG, "%s", json);
+                }
+                // ESP_LOGI(TAG, "-");
+            }
         }
-        /* 按 config.h 中配置的采样周期延时 */
-        vTaskDelay(pdMS_TO_TICKS(SENSOR_SAMPLE_INTERVAL_MS));
+        /* 绝对周期调度: 保证帧间隔真正等于 SENSOR_SAMPLE_INTERVAL_MS */
+        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(SENSOR_SAMPLE_INTERVAL_MS));
     }
 }
 

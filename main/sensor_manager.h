@@ -28,6 +28,16 @@ int sensor_manager_collect(sensor_sample_t *out, int max);
 /** 将采集结果格式化为 JSON(含传感器名与地址, 便于 P4 端区分数据来源) */
 size_t sensor_sample_to_json(const sensor_sample_t *s, char *buf, size_t len);
 
+/**
+ * 构建用于 ESP-NOW 实时传输的发送帧(JSON 文本)。
+ * @param node_id  本块 C5 的节点 ID(左右两块各写不同值, 供 P4 区分来源)
+ * @param s        一帧采集结果(取其中的 IMU 原始 int16 数据)
+ * @param press    2 路压力传感器占位值(当前为预留, 取值恒为 0; 传 NULL 也可)
+ * @return 写入的字节数(不含结尾 '\0'); 参数非法时返回 0。
+ */
+size_t sensor_build_tx_frame(int node_id, const sensor_sample_t *s,
+                             const float press[2], char *buf, size_t len);
+
 #ifdef __cplusplus
 }
 #endif

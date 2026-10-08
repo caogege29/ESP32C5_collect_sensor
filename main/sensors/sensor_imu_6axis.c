@@ -90,7 +90,7 @@ static esp_err_t df_i2c_read_reg16(uint16_t reg, uint8_t *buf, size_t len)
     if (err != ESP_OK) {
         return err;
     }
-    esp_rom_delay_us(10000); /* 10ms: 与库中 delay(10) 一致 */
+    esp_rom_delay_us(IMU_I2C_READ_DELAY_US); /* 延时由 config.h 配置(默认库值 10ms, 实测可调小提速) */
     return i2c_master_receive(dev, buf, len, I2C_MASTER_TIMEOUT_MS);
 }
 
@@ -169,6 +169,16 @@ static esp_err_t imu_read(uint8_t addr, sensor_data_t *out)
     gv[1] = (int16_t)(raw[8]  | (raw[9]  << 8)); /* gyrY */
     gv[2] = (int16_t)(raw[10] | (raw[11] << 8)); /* gyrZ */
 
+    /* 原始 int16 数据(供 ESP-NOW 传输 / 上位机自行换算) */
+    out->has_acc_raw = true;
+    out->acc_raw[0] = av[0];
+    out->acc_raw[1] = av[1];
+    out->acc_raw[2] = av[2];
+    out->has_gyr_raw = true;
+    out->gyr_raw[0] = gv[0];
+    out->gyr_raw[1] = gv[1];
+    out->gyr_raw[2] = gv[2];
+
     /* 加速度: raw -> g -> m/s^2 */
     out->has_acc = true;
     for (int i = 0; i < 3; i++) {
@@ -183,13 +193,6 @@ static esp_err_t imu_read(uint8_t addr, sensor_data_t *out)
 
     /* 该协议未暴露温度, 置空 */
     out->has_temp = false;
-
-    /* 串口打印采集数据(调试用) */
-    ESP_LOGI(TAG, "0x%02X ACC[m/s^2] X=%.3f Y=%.3f Z=%.3f | "
-                  "GYR[dps] X=%.3f Y=%.3f Z=%.3f",
-             addr,
-             out->acc_mps2[0], out->acc_mps2[1], out->acc_mps2[2],
-             out->gyr_dps[0], out->gyr_dps[1], out->gyr_dps[2]);
 
     return ESP_OK;
 }

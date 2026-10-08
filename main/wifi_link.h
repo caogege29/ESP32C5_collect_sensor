@@ -6,12 +6,13 @@
 extern "C" {
 #endif
 
-/** 初始化 WiFi 数据链路(预留) */
+/** 初始化 WiFi 数据链路: 以 STA 连接热点并通过 UDP 发送数据到 C6/P4 */
 esp_err_t wifi_link_init(void);
 
 /**
- * 发送一帧采集数据(JSON 字符串)给 ESP32-P4 主控(预留)。
- * payload 格式: {"sensor":"6-axis IMU","addr":"0x4A","acc":[...],"gyr":[...]}
+ * 发送一帧采集数据(JSON 文本)给 C6/P4 接收端(UDP)。
+ * payload 格式: {"node":0,"sensor":"6-axis IMU","addr":"0x4A","acc_raw":[...],"gyr_raw":[...],"press":...}
+ * 注意: 需先成功连接热点; 连接建立前该调用会尝试创建 socket 并发送(可能失败)。
  */
 esp_err_t wifi_link_send_data(const char *payload);
 

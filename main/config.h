@@ -29,14 +29,29 @@
 
 /* ---------------------------- 采集任务 ------------------------------------ */
 #define SENSOR_TASK_NAME           "sensor_task"
-#define SENSOR_TASK_STACK_SIZE     4096
+#define SENSOR_TASK_STACK_SIZE     6144
 #define SENSOR_TASK_PRIO           5
-#define SENSOR_SAMPLE_INTERVAL_MS  100      /* 采样周期 */
+#define SENSOR_SAMPLE_INTERVAL_MS  5        /* 采样周期(个位毫秒级) */
+#define SENSOR_LOG_INTERVAL_FRAMES 200      /* 每 N 帧打印一次 JSON (5ms*200=1s, 不降发送速率) */
 #define SENSOR_MANAGER_MAX_INSTANCES 8      /* 同时在线的最大传感器实例数 */
 
-/* ------------------------ WiFi 传输（预留） -------------------------------- */
-/* 后续将采集数据通过 WiFi 发送给 ESP32-P4 主控，接口见 wifi_link.h */
-#define WIFI_LINK_ENABLED          0        /* 1: 启用(待实现), 0: 预留 */
-#define WIFI_LINK_SSID             "your-ssid"
-#define WIFI_LINK_PASS             "your-password"
-#define WIFI_LINK_P4_PORT          8080     /* P4 侧 TCP 服务端口(预留) */
+/* ----------------------- SEN0692 IMU 读时序延时 --------------------------- */
+/* DFRobot I2C 读流程: 写寄存器地址后需等待 MCU 取数再读回。
+ * 默认 10ms 为库保守值, 偏低主频的模块才需要; 实测稳定可下调到 2~3ms 提速。
+ * 单位: 微秒(us)。 */
+#define IMU_I2C_READ_DELAY_US       1000   /* 1ms: 提采样率; 若数据异常可调回 3000~10000 */
+
+/* ------------------------ WiFi 数据链路 (STA + UDP) ------------------------- */
+/* C5 以普通 WiFi 节点(STA)连接 C6/P4 广播的热点, 然后通过 UDP 把传感器数据
+ * 发送到 C6/P4 的固定端口。
+ * 启用: WIFI_LINK_ENABLED=1。 */
+#define WIFI_LINK_ENABLED           1        /* 1: 启用 WiFi 发送 */
+/* C5 节点 ID: 由于会『左』『右』各挂一块 C5 同时向 P4 传输,
+ * 每块写入不同 ID 以便 P4 区分数据来源(如 左=0, 右=1)。 */
+#define WIFI_LINK_NODE_ID           0        /* 本块 C5 的节点编号(左右各不相同) */
+/* 要连接的热点(C6/P4 广播) SSID / 密码 */
+#define WIFI_LINK_SSID              "HipExo_C6"         /* P4 侧 AP 热点名 (WIFI_RX_AP_SSID) */
+#define WIFI_LINK_PASS              "12345678"          /* 热点密码 (WIFI_RX_AP_PASS) */
+/* C6/P4 接收端的 IP 与 UDP 端口 */
+#define WIFI_LINK_TARGET_IP         "192.168.4.1"       /* P4 侧 AP 模式默认网关地址 */
+#define WIFI_LINK_TARGET_PORT       5005                /* P4 侧 UDP 监听端口 (WIFI_RX_UDP_PORT) */

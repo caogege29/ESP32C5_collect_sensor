@@ -150,3 +150,60 @@ size_t sensor_sample_to_json(const sensor_sample_t *s, char *buf, size_t len)
     return off;
 #undef APPEND
 }
+
+/**
+ * 构建用于 ESP-NOW 实时传输的发送帧(JSON 文本)。
+ * 帧格式示例:
+ *   {"node":0,"sensor":"SEN0692 6-axis IMU","acc_raw":[-17,-3,1024],"gyr_raw":[1,-2,5],"press":[0.00,0.00]}
+ * - node      : 本块 C5 的节点 ID, 供 P4 区分『左/右』来源;
+ * - acc_raw/gyr_raw : IMU 原始 int16(供上位机自行换算);
+ * - press     : 2 路压力传感器占位值(当前留空=0, 预留)。
+ */
+size_t sensor_build_tx_frame(int node_id, const sensor_sample_t *s,
+                             const float press[2], char *buf, size_t len)
+{
+    if (s == NULL || buf == NULL || len == 0) {
+        return 0;
+    }
+
+    size_t off = 0;
+#define APPEND(...) do {                                                      \
+        if (off < len - 1) {                                                  \
+            int r = snprintf(buf + off, len - off, __VA_ARGS__);              \
+            if (r > 0) off += (size_t)r;                                      \
+        }                                                                     \
+    } while (0)
+
+    const sensor_data_t *d = &s->data;
+
+    APPEND("{\"node\":%d,\"sensor\":\"%s\",\"addr\":\"0x%02X\"",
+           node_id, s->name, s->addr);
+
+    /* IMU 原始 int16 数据(优先 raw; 若无 raw 再回退物理值) */
+    if (d->has_acc_raw) {
+        APPEND(",\"acc_raw\":[%d,%d,%d]",
+               d->acc_raw[0], d->acc_raw[1], d->acc_raw[2]);
+    } else if (d->has_acc) {
+        APPEND(",\"acc_raw\":[%.1f,%.1f,%.1f]",
+               d->acc_mps2[0], d->acc_mps2[1], d->acc_mps2[2]);
+    }
+    if (d->has_gyr_raw) {
+        APPEND(",\"gyr_raw\":[%d,%d,%d]",
+               d->gyr_raw[0], d->gyr_raw[1], d->gyr_raw[2]);
+    } else if (d->has_gyr) {
+        APPEND(",\"gyr_raw\":[%.1f,%.1f,%.1f]",
+               d->gyr_dps[0], d->gyr_dps[1], d->gyr_dps[2]);
+    }
+
+    /* 2 路压力传感器占位(当前为预留, 值恒为 0) */
+    float p0 = (press != NULL) ? press[0] : 0.0f;
+    float p1 = (press != NULL) ? press[1] : 0.0f;
+    APPEND(",\"press\":%.2f,%.2f", p0, p1);
+
+    if (off > len - 1) {
+        off = len - 1;
+    }
+    APPEND("}");
+    return off;
+#undef APPEND
+}

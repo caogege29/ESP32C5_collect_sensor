@@ -24,6 +24,15 @@ typedef struct {
     float hum_pct;
     bool  has_press;         /* 气压, 单位 hPa */
     float press_hpa;
+
+    /*
+     * IMU 原始数据(供传输/上位机自行换算):
+     * 单位与量程由驱动决定(driver 内部对应的 ±2G acc / ±250dps gyr 需自行换算)。
+     */
+    bool   has_acc_raw;      /* 是否存在三轴加速度原始 int16 数据 */
+    int16_t acc_raw[3];
+    bool   has_gyr_raw;      /* 是否存在三轴陀螺仪原始 int16 数据 */
+    int16_t gyr_raw[3];
 } sensor_data_t;
 
 /*
