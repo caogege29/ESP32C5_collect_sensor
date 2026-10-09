@@ -131,7 +131,7 @@ esp_err_t wifi_link_send_data(const char *payload)
     int n = sendto(s_sock, payload, len, 0,
                    (struct sockaddr *)&dest, sizeof(dest));
     if (n < 0) {
-        ESP_LOGW(TAG, "UDP 发送失败, errno %d (是否已连上热点?)", errno);
+        // ESP_LOGW(TAG, "UDP 发送失败, errno %d (是否已连上热点?)", errno);
         return ESP_FAIL;
     }
     s_udp_ready = true;

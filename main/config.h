@@ -29,7 +29,7 @@
 
 /* ---------------------------- 采集任务 ------------------------------------ */
 #define SENSOR_TASK_NAME           "sensor_task"
-#define SENSOR_TASK_STACK_SIZE     6144
+#define SENSOR_TASK_STACK_SIZE     8192
 #define SENSOR_TASK_PRIO           5
 #define SENSOR_SAMPLE_INTERVAL_MS  5        /* 采样周期(个位毫秒级) */
 #define SENSOR_LOG_INTERVAL_FRAMES 200      /* 每 N 帧打印一次 JSON (5ms*200=1s, 不降发送速率) */
@@ -55,3 +55,20 @@
 /* C6/P4 接收端的 IP 与 UDP 端口 */
 #define WIFI_LINK_TARGET_IP         "192.168.4.1"       /* P4 侧 AP 模式默认网关地址 */
 #define WIFI_LINK_TARGET_PORT       5005                /* P4 侧 UDP 监听端口 (WIFI_RX_UDP_PORT) */
+
+/* ------------------------ 压力传感器 (2 路 ADC) --------------------------- */
+/* 2 路电阻式压力传感器(RP-C18.3, 压阻式, 压力↑→电阻↓), 通过 10kΩ 上拉分压:
+ *   V = 3.3V * Rp / (10kΩ + Rp)   ->   Rp = 10k * V / (3.3 - V)
+ * C18.3 的 R-F 特性为幂律(见 datasheet 标定曲线, 非反比):
+ *   R(kΩ) = A * F(g)^(-B)   , A=153.18, B≈0.699
+ *   => 力 F(g) = (A / R_kΩ)^(1/B)
+ * 量程 0~6000g(≈0~6kg)。
+ * 接线: 传感器1 -> GPIO4(ADC1_CH3) = FORCE_A_3; 传感器2 -> GPIO6(ADC1_CH5) = FORCE_A_2。 */
+#define PRESSURE_1_GPIO             4                 /* 压力传感器 1 -> GPIO4 (ADC1_CH3) */
+#define PRESSURE_2_GPIO             6                 /* 压力传感器 2 -> GPIO6 (ADC1_CH5) */
+#define PRESSURE_ADC_VREF_MV        3300.0f           /* ADC 满量程基准(mV), 可微调校准 */
+#define PRESSURE_VCC_MV             3300.0f           /* 分压网络供电 3.3V */
+#define PRESSURE_R_REF_OHM          10000.0f          /* 上拉分压电阻 10kΩ */
+#define PRESSURE_FORCE_A            153.18f           /* 幂律系数 A: R(kΩ)=A*F(g)^-B */
+#define PRESSURE_FORCE_B            0.699f            /* 幂律指数 B (负相关, 标定曲线≈0.6~0.7) */
+#define PRESSURE_FORCE_FULL_G       6000.0f           /* 满量程 6000g (用于钳位) */

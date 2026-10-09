@@ -2,10 +2,11 @@ idf_component_register(SRCS "main.c"
                             "i2c_bus.c"
                             "sensor_manager.c"
                             "wifi_link.c"
+                            "pressure_sensor.c"
                             "sensors/sensor_imu_6axis.c"
                             "sensors/bosch/bmi3.c"
                             "sensors/bosch/bmi323.c"
                     INCLUDE_DIRS "."
                                  "sensors"
                                  "sensors/bosch"
-                    REQUIRES driver esp_wifi esp_netif esp_event nvs_flash)
+                    REQUIRES driver esp_wifi esp_netif esp_event nvs_flash esp_adc)

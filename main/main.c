@@ -18,6 +18,7 @@
 #include "i2c_bus.h"
 #include "sensor_manager.h"
 #include "wifi_link.h"
+#include "pressure_sensor.h"
 
 static const char *TAG = "main";
 
@@ -31,21 +32,23 @@ static void sensor_task(void *arg)
     char json[256];                                        /* 单帧 JSON 序列化缓冲 */
     TickType_t last_wake = xTaskGetTickCount();            /* 绝对周期调度基准点 */
     uint32_t frame_cnt = 0;                                /* 帧计数(用于节流打印) */
+    float press[2] = {0};                                  /* 两路压力读数(g) */
 
     while (1) {
         /* 采集所有在线传感器各一帧, 返回实际采集到的数量 */
         int n = sensor_manager_collect(samples, SENSOR_MANAGER_MAX_INSTANCES);
+        /* 读取两路压力传感器(ADC -> 电压 -> 力) */
+        pressure_read(press);
         frame_cnt++;
         for (int i = 0; i < n; i++) {
-            /* 构建含 node_id + IMU原始数据 + 压力占位的发送帧, 实时发给 P4 */
+            /* 构建含 node_id + IMU原始数据 + 压力值的发送帧, 实时发给 P4 */
             if (sensor_build_tx_frame(WIFI_LINK_NODE_ID, &samples[i],
-                                      NULL, json, sizeof(json)) > 0) {
+                                      press, json, sizeof(json)) > 0) {
                 wifi_link_send_data(json);        /* 每帧都实时发送到 ESP32-P4 接收端 */
                 /* 打印节流: 每 N 帧(5ms*200=1s)才打一次, 避免高速下 UART 拖慢发送 */
                 if ((frame_cnt % SENSOR_LOG_INTERVAL_FRAMES) == 0) {
                     ESP_LOGI(TAG, "%s", json);
                 }
-                // ESP_LOGI(TAG, "-");
             }
         }
         /* 绝对周期调度: 保证帧间隔真正等于 SENSOR_SAMPLE_INTERVAL_MS */
@@ -65,10 +68,15 @@ void app_main(void)
     ESP_ERROR_CHECK(i2c_bus_init());
     /* 扫描总线并按地址识别外挂传感器 */
     ESP_ERROR_CHECK(sensor_manager_init());
+    /* 初始化 2 路压力传感器 ADC 采样 */
+    ESP_ERROR_CHECK(pressure_init());
     /* 初始化预留的 WiFi 数据链路 */
     ESP_ERROR_CHECK(wifi_link_init());
 
-    /* 创建传感器采集任务(参数见 config.h) */
-    xTaskCreate(sensor_task, SENSOR_TASK_NAME, SENSOR_TASK_STACK_SIZE,
-                NULL, SENSOR_TASK_PRIO, NULL);
+    /* 创建传感器采集任务(参数见 config.h), 失败时打印原因便于定位 */
+    BaseType_t ret = xTaskCreate(sensor_task, SENSOR_TASK_NAME, SENSOR_TASK_STACK_SIZE,
+                                 NULL, SENSOR_TASK_PRIO, NULL);
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "创建采集任务失败 (err=%d, 栈=%d)", (int)ret, SENSOR_TASK_STACK_SIZE);
+    }
 }
