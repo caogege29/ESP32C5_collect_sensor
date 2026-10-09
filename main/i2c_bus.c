@@ -93,6 +93,19 @@ esp_err_t i2c_bus_read_regs(i2c_master_dev_handle_t dev, uint8_t reg, uint8_t *b
 }
 
 /**
+ * 复位 I2C 总线: 通过发时钟脉冲让从机释放被拉低的 SDA, 并重新初始化控制器。
+ * 场景: 上位机在某次传输中途复位时, 从机可能持续拉低 SDA 导致整条总线"假死",
+ *       表现为上电扫描 0 设备, 只有复位总线才能恢复。
+ */
+esp_err_t i2c_bus_reset(void)
+{
+    if (s_bus == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return i2c_master_bus_reset(s_bus);
+}
+
+/**
  * 扫描 I2C 总线, 将在线设备的 7bit 地址写入 addrs, 返回在线设备数量。
  * 扫描范围 0x03~0x77(避开保留地址)。
  */

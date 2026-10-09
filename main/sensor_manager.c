@@ -1,6 +1,9 @@
 #include <string.h>
 #include <stdio.h>
 #include "esp_log.h"
+#include "driver/gpio.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "config.h"
 #include "i2c_bus.h"
 #include "sensor_manager.h"
@@ -27,20 +30,24 @@ static sensor_instance_t s_inst[SENSOR_MANAGER_MAX_INSTANCES]; /* 实例数组 *
 static int               s_inst_count = 0;                     /* 已识别实例数 */
 
 /**
- * 初始化传感器管理器:
- *   1) 扫描 I2C 总线, 得到所有在线设备地址;
- *   2) 遍历驱动注册表, 地址在线则调用 probe 探测识别;
- *   3) 报告未识别设备, 便于后续扩展驱动。
+ * 单次扫描 + 识别:
+ *   1) 复位总线(释放可能被从机拉低的 SDA/SCL);
+ *   2) 扫描 I2C 总线, 得到所有在线设备地址;
+ *   3) 遍历驱动注册表, 地址在线则调用 probe 探测识别;
+ *   4) 报告未识别设备, 便于后续扩展驱动。
+ * @return 总线上应答的设备数量(用于判断是"总线无设备"还是"设备未识别")
  */
-esp_err_t sensor_manager_init(void)
+static int sensor_manager_scan(void)
 {
+    /* 复位总线: 覆盖上一次传输中断/从机挂死导致的整条总线假死 */
+    i2c_bus_reset();
+
     /* 1. 扫描总线上的在线设备 */
     uint8_t online[117]; /* 7bit 可寻址范围 0x03~0x77 */
     int n = i2c_bus_scan(online, (int)sizeof(online));
+    int total = n;       /* 记录总线应答总数, 供上层区分故障类型 */
     if (n <= 0) {
-        ESP_LOGW(TAG, "I2C 总线未发现任何设备, 请检查接线: SDA=GPIO%d SCL=GPIO%d, "
-                      "模块通信模式需拨到 I2C", I2C_MASTER_SDA_IO, I2C_MASTER_SCL_IO);
-        return ESP_OK;
+        return 0;
     }
     ESP_LOGI(TAG, "I2C 扫描到 %d 个设备:", n);
     ESP_LOG_BUFFER_HEX(TAG, online, n);
@@ -82,9 +89,36 @@ esp_err_t sensor_manager_init(void)
         ESP_LOGW(TAG, "在线设备 0x%02X 未能识别 (无对应驱动), "
                       "可在 s_sensor_registry 注册表扩展", online[i]);
     }
+    return total;
+}
+
+/**
+ * 初始化传感器管理器: 带延时重试, 覆盖模块上电时序抖动。
+ */
+esp_err_t sensor_manager_init(void)
+{
+    const int MAX_RETRY = 3;
+
+    for (int attempt = 0; attempt < MAX_RETRY && s_inst_count == 0; attempt++) {
+        if (attempt > 0) {
+            /* 等待模块上电稳定后再重扫 */
+            vTaskDelay(pdMS_TO_TICKS(200));
+        }
+
+        if (sensor_manager_scan() == 0) {
+            /* 总线上一个设备都没应答: 打印 SDA 空闲电平辅助判断硬件,
+             * 正常空闲应为 1; 若为 0 说明被拉低(短路/未供电/接线错误) */
+            ESP_LOGW(TAG, "I2C 总线未发现任何设备 (第 %d/%d 次): SDA=GPIO%d(空闲电平=%d), "
+                          "请检查 SCL=GPIO%d 接线/模块供电/GND/通信模式需拨到 I2C",
+                     attempt + 1, MAX_RETRY,
+                     I2C_MASTER_SDA_IO, gpio_get_level(I2C_MASTER_SDA_IO),
+                     I2C_MASTER_SCL_IO);
+        }
+    }
+
     if (s_inst_count == 0) {
-        ESP_LOGW(TAG, "无传感器被识别, 按图检查模块地址拨码: 0x%02X (A0=0, A1=0)",
-                 SENSOR_IMU_6AXIS_ADDR);
+        ESP_LOGW(TAG, "无传感器被识别 (已重试 %d 次), 按图检查模块地址拨码: 0x%02X (A0=0, A1=0)",
+                 MAX_RETRY, SENSOR_IMU_6AXIS_ADDR);
     }
     return ESP_OK;
 }
@@ -97,15 +131,39 @@ esp_err_t sensor_manager_init(void)
  */
 int sensor_manager_collect(sensor_sample_t *out, int max)
 {
+    /* 自愈: 若开机未识别到任何传感器(偶发上电时序/接触导致总线无应答),
+     * 运行中每约 1s 重扫一次总线, 识别成功后自动恢复采集, 无需重启设备。 */
+    if (s_inst_count == 0) {
+        static TickType_t last_rescan = 0;
+        TickType_t now = xTaskGetTickCount();
+        if (now - last_rescan >= pdMS_TO_TICKS(1000)) {
+            last_rescan = now;
+            sensor_manager_scan();
+        }
+    }
+
     int n = 0;
     for (int i = 0; i < s_inst_count && n < max; i++) {
         out[n].name = s_inst[i].drv->name;
         out[n].addr = s_inst[i].addr;
-        if (s_inst[i].drv->read(s_inst[i].addr, &out[n].data) == ESP_OK) {
+        esp_err_t err = s_inst[i].drv->read(s_inst[i].addr, &out[n].data);
+        if (err == ESP_OK) {
             n++; /* 读取成功才计入 */
+        } else {
+            /* 读失败节流打印, 避免持续失败时刷屏(每 200 次≈1s 打一次) */
+            static uint32_t fail_cnt = 0;
+            if ((fail_cnt++ % 200) == 0) {
+                ESP_LOGW(TAG, "读取 %s @ 0x%02X 失败: %s",
+                         s_inst[i].drv->name, s_inst[i].addr, esp_err_to_name(err));
+            }
         }
     }
     return n;
+}
+
+int sensor_manager_count(void)
+{
+    return s_inst_count;
 }
 
 /**

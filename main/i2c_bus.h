@@ -27,6 +27,9 @@ esp_err_t i2c_bus_read_regs(i2c_master_dev_handle_t dev, uint8_t reg, uint8_t *b
 /** 扫描总线, 将在线设备的 7bit 地址写入 addrs, 返回在线设备数量 */
 int i2c_bus_scan(uint8_t *addrs, int max);
 
+/** 复位 I2C 总线(释放可能被从机拉低的 SDA/SCL), 用于偶发"总线上无设备"时自愈 */
+esp_err_t i2c_bus_reset(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -34,6 +34,9 @@ static void sensor_task(void *arg)
     uint32_t frame_cnt = 0;                                /* 帧计数(用于节流打印) */
     float press[2] = {0};                                  /* 两路压力读数(g) */
 
+    ESP_LOGI(TAG, "采集任务启动, 栈=%d, 已识别传感器=%d",
+             SENSOR_TASK_STACK_SIZE, sensor_manager_count());
+
     while (1) {
         /* 采集所有在线传感器各一帧, 返回实际采集到的数量 */
         int n = sensor_manager_collect(samples, SENSOR_MANAGER_MAX_INSTANCES);
@@ -49,6 +52,13 @@ static void sensor_task(void *arg)
                 if ((frame_cnt % SENSOR_LOG_INTERVAL_FRAMES) == 0) {
                     ESP_LOGI(TAG, "%s", json);
                 }
+            }
+        }
+        /* 诊断(节流): n==0 说明 IMU 读失败; 顺带打印剩余栈判断是否仍临界 */
+        if ((frame_cnt % SENSOR_LOG_INTERVAL_FRAMES) == 0) {
+            if (n == 0) {
+                ESP_LOGW(TAG, "本周期未采集到数据 (n=0), 剩余栈=%u",
+                         (unsigned)uxTaskGetStackHighWaterMark(NULL));
             }
         }
         /* 绝对周期调度: 保证帧间隔真正等于 SENSOR_SAMPLE_INTERVAL_MS */

@@ -39,7 +39,17 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         ESP_LOGI(TAG, "STA 启动, 尝试连接热点...");
         esp_wifi_connect();
     } else if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        ESP_LOGW(TAG, "与热点断开, 尝试重连...");
+        /* STA 连接失败(如找不到 AP)也会触发 DISCONNECTED, 需按 reason 区分,
+         * 避免把"从未连上"误报成"断开重连"。 */
+        wifi_event_sta_disconnected_t *d =
+            (wifi_event_sta_disconnected_t *)event_data;
+        uint8_t reason = (d != NULL) ? d->reason : 0;
+        if (reason == WIFI_REASON_NO_AP_FOUND) {
+            ESP_LOGW(TAG, "未找到热点 SSID=%s (主设备 AP 未开启?), 继续重试...",
+                     WIFI_LINK_SSID);
+        } else {
+            ESP_LOGW(TAG, "与热点断开 (reason=%d), 尝试重连...", reason);
+        }
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECT_FAIL_BIT);
         esp_wifi_connect();
     } else if (base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {

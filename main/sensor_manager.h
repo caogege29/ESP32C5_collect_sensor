@@ -25,6 +25,9 @@ esp_err_t sensor_manager_init(void);
 /** 采集所有在线传感器各一帧, 返回成功采集的数量 */
 int sensor_manager_collect(sensor_sample_t *out, int max);
 
+/** 返回当前已识别的传感器实例数(用于诊断) */
+int sensor_manager_count(void);
+
 /** 将采集结果格式化为 JSON(含传感器名与地址, 便于 P4 端区分数据来源) */
 size_t sensor_sample_to_json(const sensor_sample_t *s, char *buf, size_t len);
 
