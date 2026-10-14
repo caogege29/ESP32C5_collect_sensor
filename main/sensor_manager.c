@@ -212,7 +212,7 @@ size_t sensor_sample_to_json(const sensor_sample_t *s, char *buf, size_t len)
 /**
  * 构建用于 WiFi(UDP) 实时传输的发送帧(JSON 文本)。
  * 帧格式示例:
- *   {"node":0,"sensor":"SEN0692 6-axis IMU","acc":[-0.01,-0.06,-9.35],"gyr":[0.04,-0.02,0.02],"press":[7.35,11.77]}
+ *   {"node":0,"acc":[-0.020,-0.061,-9.353],"gyr":[-0.038,0.023,0.015],"press":[7.35,11.77]}
  * - node  : 本块 C5 的节点 ID, 供 P4 区分『左/右』来源;
  * - acc   : 三轴加速度物理量(m/s^2, ±2G 量程);
  * - gyr   : 三轴角速度物理量(dps, ±250dps 量程);
@@ -235,8 +235,7 @@ size_t sensor_build_tx_frame(int node_id, const sensor_sample_t *s,
 
     const sensor_data_t *d = &s->data;
 
-    APPEND("{\"node\":%d,\"sensor\":\"%s\",\"addr\":\"0x%02X\"",
-           node_id, s->name, s->addr);
+    APPEND("{\"node\":%d", node_id);
 
     /* IMU 物理量: 加速度 m/s^2(±2G 量程), 角速度 dps(±250dps 量程) */
     if (d->has_acc) {
