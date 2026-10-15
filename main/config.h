@@ -48,7 +48,7 @@
 #define WIFI_LINK_ENABLED           1        /* 1: 启用 WiFi 发送 */
 /* C5 节点 ID: 由于会『左』『右』各挂一块 C5 同时向 P4 传输,
  * 每块写入不同 ID 以便 P4 区分数据来源(如 左=0, 右=1)。 */
-#define WIFI_LINK_NODE_ID           0        /* 本块 C5 的节点编号(左右各不相同) */
+#define WIFI_LINK_NODE_ID           4        /* 本块 C5 的节点编号(左右各不相同) */
 /* 要连接的热点(C6/P4 广播) SSID / 密码 */
 #define WIFI_LINK_SSID              "HipExo_C6"         /* P4 侧 AP 热点名 (WIFI_RX_AP_SSID) */
 #define WIFI_LINK_PASS              "12345678"          /* 热点密码 (WIFI_RX_AP_PASS) */
@@ -63,8 +63,8 @@
  *   R(kΩ) = A * F(g)^(-B)   , A=153.18, B≈0.699
  *   => 力 F(g) = (A / R_kΩ)^(1/B)
  * 量程 0~6000g(≈0~6kg)。
- * 接线: 传感器1 -> GPIO5(ADC1_CH4) = FORCE_A_3; 传感器2 -> GPIO6(ADC1_CH5) = FORCE_A_2。 */
-#define PRESSURE_1_GPIO             5                 /* 压力传感器 1 -> GPIO5 (ADC1_CH4) */
+ * 接线: 传感器1 -> GPIO4(ADC1_CH3) = FORCE_A_3; 传感器2 -> GPIO6(ADC1_CH5) = FORCE_A_2。 */
+#define PRESSURE_1_GPIO             4                 /* 压力传感器 1 -> GPIO4 (ADC1_CH3) */
 #define PRESSURE_2_GPIO             6                 /* 压力传感器 2 -> GPIO6 (ADC1_CH5) */
 #define PRESSURE_ADC_VREF_MV        3300.0f           /* ADC 满量程基准(mV), 可微调校准 */
 #define PRESSURE_VCC_MV             3300.0f           /* 分压网络供电 3.3V */

@@ -13,7 +13,7 @@ static const char *TAG = "pressure";
  *   GPIO5 = ADC1_CH4
  *   GPIO6 = ADC1_CH5
  */
-#define PRESS_CH0        ADC_CHANNEL_4   /* 压力1 -> GPIO5 */
+#define PRESS_CH0        ADC_CHANNEL_3   /* 压力1 -> GPIO4 */
 #define PRESS_CH1        ADC_CHANNEL_5   /* 压力2 -> GPIO6 */
 
 static adc_oneshot_unit_handle_t s_adc1 = NULL;
